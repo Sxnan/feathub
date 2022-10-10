@@ -80,5 +80,5 @@ class FlinkTableBuilderTestBase(unittest.TestCase):
             keys=keys,
             timestamp_field=timestamp_field,
             timestamp_format=timestamp_format,
-            max_out_of_orderness=timedelta(minutes=1),
+            max_out_of_orderness=timedelta(days=10),
         )

@@ -33,7 +33,6 @@
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
 
-        <flink.version>1.15.2</flink.version>
         <spotless.version>2.13.0</spotless.version>
         <spotless.scalafmt.version>3.4.3</spotless.scalafmt.version>
         <spotless.delimiter>package</spotless.delimiter>
@@ -164,4 +163,23 @@
         </plugins>
     </build>
 
+    <profiles>
+        <profile>
+            <id>flink-1.15</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <flink.version>1.15.2</flink.version>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>flink-1.13</id>
+            <properties>
+                <flink.version>1.13.6</flink.version>
+                <scala.version>2.12</scala.version>
+            </properties>
+        </profile>
+    </profiles>
 </project>

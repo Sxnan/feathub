@@ -52,10 +52,12 @@ def add_jar_to_t_env(t_env: StreamTableEnvironment, jar_path: str) -> None:
     """
     Add the jar path to the given StreamTableEnvironment if it is not already added.
     """
-    old_jars = t_env.get_config().get("pipeline.jars", "")
+    old_jars = t_env.get_config().get_configuration().get_string("pipeline.jars", "")
     old_jars = [] if old_jars == "" else old_jars.split(";")
     jar_path = f"file://{jar_path}"
     if jar_path in old_jars:
         # already added
         return
-    t_env.get_config().set("pipeline.jars", ";".join([*old_jars, jar_path]))
+    t_env.get_config().get_configuration().set_string(
+        "pipeline.jars", ";".join([*old_jars, jar_path])
+    )

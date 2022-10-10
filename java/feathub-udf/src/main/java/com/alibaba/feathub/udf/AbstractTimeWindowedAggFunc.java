@@ -20,9 +20,9 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.functions.AggregateFunction;
+import org.apache.flink.table.runtime.functions.SqlDateTimeUtils;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.TypeInference;
-import org.apache.flink.table.utils.DateTimeUtils;
 import org.apache.flink.util.Preconditions;
 
 import java.time.Duration;
@@ -92,7 +92,8 @@ public abstract class AbstractTimeWindowedAggFunc<INPUT_T, RESULT_T>
         Preconditions.checkState(
                 this.timeInterval.equals(duration), "timeInterval should not changes.");
 
-        final long timestamp = DateTimeUtils.toTimestampMillis(localDateTime);
+        final long timestamp = SqlDateTimeUtils.localDateTimeToUnixTimestamp(localDateTime);
+
         acc.addValue(value, timestamp);
     }
 
@@ -108,7 +109,7 @@ public abstract class AbstractTimeWindowedAggFunc<INPUT_T, RESULT_T>
         Preconditions.checkState(
                 this.timeInterval.equals(duration), "timeInterval should not changes.");
 
-        final long timestamp = DateTimeUtils.toTimestampMillis(localDateTime);
+        final long timestamp = SqlDateTimeUtils.localDateTimeToUnixTimestamp(localDateTime);
         acc.removeValue(value, timestamp);
     }
 

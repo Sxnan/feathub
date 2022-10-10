@@ -332,5 +332,8 @@ class FlinkProcessorTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            processor.flink_table_builder.t_env.get_config().get("key", None), "value"
+            processor.flink_table_builder.t_env.get_config()
+            .get_configuration()
+            .get_string("key", None),
+            "value",
         )

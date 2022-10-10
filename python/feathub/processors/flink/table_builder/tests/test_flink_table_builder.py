@@ -46,8 +46,12 @@ class FlinkTableBuilderTest(FlinkTableBuilderTestBase):
     def test_get_table_from_file_source(self):
         source = self._create_file_source(self.input_data.copy())
         table = self.flink_table_builder.build(features=source)
-        df = table.to_pandas()
-        self.assertTrue(self.input_data.equals(df))
+        df = table.to_pandas().sort_values(by=["name", "time"]).reset_index(drop=True)
+        self.assertTrue(
+            self.input_data.sort_values(by=["name", "time"])
+            .reset_index(drop=True)
+            .equals(df)
+        )
 
     def test_get_table_with_single_key(self):
         source = self._create_file_source(self.input_data.copy(), keys=["name"])

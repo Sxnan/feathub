@@ -142,7 +142,7 @@ def insert_into_kafka_sink(
 
 def _get_kafka_connector_jar() -> str:
     lib_dir = find_jar_lib()
-    jars = glob.glob(os.path.join(lib_dir, "flink-sql-connector-kafka-*.jar"))
+    jars = glob.glob(os.path.join(lib_dir, "flink-sql-connector-kafka*.jar"))
     if len(jars) < 1:
         raise FeathubException(
             f"Can not find the Flink Kafka connector jar at {lib_dir}."

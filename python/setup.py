@@ -92,7 +92,7 @@ try:
         "ply>=3.11",
         "pandas>=1.1.5",
         "numpy>=1.14.3,<1.20",
-        "apache-flink~=1.15",
+        "apache-flink==1.14.6",
         "kubernetes~=24.2",
     ]
 

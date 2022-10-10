@@ -77,15 +77,15 @@ def get_table_from_data_gen_source(
                 table_descriptor_builder.option(
                     f"fields.{field}.max", str(field_config.maximum)
                 )
-            if data_gen_source.schema.get_field_type(field) == Timestamp:
-                table_descriptor_builder.option(
-                    f"fields.{field}.max-past",
-                    f"{field_config.max_past // timedelta(milliseconds=1)} ms",
-                )
-            if data_gen_source.schema.get_field_type(field) == String:
-                table_descriptor_builder.option(
-                    f"fields.{field}.length", str(field_config.length)
-                )
+            # if data_gen_source.schema.get_field_type(field) == Timestamp:
+            #     table_descriptor_builder.option(
+            #         f"fields.{field}.max-past",
+            #         f"{field_config.max_past // timedelta(milliseconds=1)} ms",
+            #     )
+            # if data_gen_source.schema.get_field_type(field) == String:
+            #     table_descriptor_builder.option(
+            #         f"fields.{field}.length", str(field_config.length)
+            #     )
         elif isinstance(field_config, SequenceField):
             table_descriptor_builder.option(f"fields.{field}.kind", "sequence")
             if field_config.start is not None:

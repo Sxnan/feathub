@@ -33,7 +33,7 @@
             <useProjectAttachments>false</useProjectAttachments>
 
             <includes>
-                <include>org.apache.flink:flink-sql-connector-kafka</include>
+                <include>org.apache.flink:flink-sql-connector-kafka_${scala.version}</include>
             </includes>
         </dependencySet>
     </dependencySets>

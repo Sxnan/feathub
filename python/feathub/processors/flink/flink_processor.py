@@ -231,7 +231,9 @@ class FlinkProcessor(Processor):
             split_k = k.split(".")
             if split_k[0] != FLINK_CONFIG_PREFIX:
                 continue
-            table_env.get_config().set(".".join(split_k[1:]), v)
+            table_env.get_config().get_configuration().set_string(
+                ".".join(split_k[1:]), v
+            )
 
         if jobmanager_rpc_address is not None and jobmanager_rpc_port is not None:
             os.environ.pop("SUBMIT_ARGS")
