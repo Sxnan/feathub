@@ -31,7 +31,7 @@ from feathub.feature_views.transforms.sliding_window_transform import (
 from feathub.processors.flink.flink_types_utils import to_flink_type
 from feathub.processors.flink.table_builder.aggregation_utils import (
     get_default_value_and_type,
-    AggregationFieldDescriptor,
+    SlidingWindowAggregationFieldDescriptor,
 )
 from feathub.processors.flink.table_builder.flink_table_builder_constants import (
     EVENT_TIME_ATTRIBUTE_NAME,
@@ -87,7 +87,7 @@ class JoinFieldDescriptor:
             return JoinFieldDescriptor(field_name, to_flink_type(feature.dtype))
 
         default_value, _ = get_default_value_and_type(
-            agg_descriptor=AggregationFieldDescriptor.from_feature(feature)
+            agg_descriptor=SlidingWindowAggregationFieldDescriptor.from_feature(feature)
         )
 
         return JoinFieldDescriptor(

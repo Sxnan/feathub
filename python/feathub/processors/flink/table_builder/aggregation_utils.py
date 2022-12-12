@@ -11,7 +11,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-
+from datetime import timedelta
 from typing import Any, Tuple
 
 from pyflink.table.types import DataType, DataTypes
@@ -49,10 +49,7 @@ class AggregationFieldDescriptor:
     @staticmethod
     def from_feature(feature: Feature) -> "AggregationFieldDescriptor":
         transform = feature.transform
-        if not (
-            isinstance(transform, SlidingWindowTransform)
-            or isinstance(transform, OverWindowTransform)
-        ):
+        if not isinstance(transform, OverWindowTransform):
             raise FeathubException(
                 f"Cannot convert {feature} to AggregationFieldDescriptor."
             )
@@ -61,6 +58,38 @@ class AggregationFieldDescriptor:
             to_flink_type(feature.dtype),
             to_flink_sql_expr(transform.expr),
             transform.agg_func,
+        )
+
+
+class SlidingWindowAggregationFieldDescriptor(AggregationFieldDescriptor):
+    """
+    Descriptor of a field computed by aggregation in sliding window.
+    """
+
+    def __init__(
+        self,
+        field_name: str,
+        field_data_type: DataType,
+        expr: str,
+        agg_func: AggFunc,
+        window_size: timedelta,
+    ):
+        super().__init__(field_name, field_data_type, expr, agg_func)
+        self.window_size = window_size
+
+    @staticmethod
+    def from_feature(feature: Feature) -> "SlidingWindowAggregationFieldDescriptor":
+        transform = feature.transform
+        if not isinstance(transform, SlidingWindowTransform):
+            raise FeathubException(
+                f"Cannot convert {feature} to SlidingWindowAggregationFieldDescriptor."
+            )
+        return SlidingWindowAggregationFieldDescriptor(
+            feature.name,
+            to_flink_type(feature.dtype),
+            to_flink_sql_expr(transform.expr),
+            transform.agg_func,
+            transform.window_size,
         )
 
 

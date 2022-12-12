@@ -20,6 +20,7 @@ from pyflink.table import (
     Table as NativeFlinkTable,
     expressions as native_flink_expr,
 )
+from pyflink.table.types import _to_java_data_type, DataTypes
 
 from feathub.common.exceptions import FeathubTransformationException
 from feathub.feature_views.sliding_feature_view import (
@@ -34,6 +35,7 @@ from feathub.feature_views.transforms.sliding_window_transform import (
 from feathub.processors.flink.table_builder.aggregation_utils import (
     AggregationFieldDescriptor,
     get_default_value_and_type,
+    SlidingWindowAggregationFieldDescriptor,
 )
 from feathub.processors.flink.table_builder.flink_sql_expr_utils import (
     to_flink_sql_expr,
@@ -57,13 +59,11 @@ class SlidingWindowDescriptor:
 
     def __init__(
         self,
-        window_size: timedelta,
         step_size: timedelta,
         limit: Optional[int],
         group_by_keys: Sequence[str],
         filter_expr: Optional[str],
     ) -> None:
-        self.window_size = window_size
         self.step_size = step_size
         self.limit = limit
         self.group_by_keys = group_by_keys
@@ -79,7 +79,6 @@ class SlidingWindowDescriptor:
             else None
         )
         return SlidingWindowDescriptor(
-            sliding_window_agg.window_size,
             sliding_window_agg.step_size,
             sliding_window_agg.limit,
             sliding_window_agg.group_by_keys,
@@ -89,7 +88,6 @@ class SlidingWindowDescriptor:
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
-            and self.window_size == other.window_size
             and self.step_size == other.step_size
             and self.limit == other.limit
             and self.group_by_keys == other.group_by_keys
@@ -99,7 +97,6 @@ class SlidingWindowDescriptor:
     def __hash__(self) -> int:
         return hash(
             (
-                self.window_size,
                 self.step_size,
                 self.limit,
                 tuple(self.group_by_keys),
@@ -114,7 +111,7 @@ def evaluate_sliding_window_transform(
     t_env: StreamTableEnvironment,
     flink_table: NativeFlinkTable,
     window_descriptor: SlidingWindowDescriptor,
-    agg_descriptors: List["AggregationFieldDescriptor"],
+    agg_descriptors: List["SlidingWindowAggregationFieldDescriptor"],
     config: SlidingFeatureViewConfig,
 ) -> NativeFlinkTable:
     """
@@ -131,85 +128,17 @@ def evaluate_sliding_window_transform(
                    belongs to.
     :return: The result table.
     """
-
-    step_interval = timedelta_to_flink_sql_interval(window_descriptor.step_size)
-    window_size_interval = timedelta_to_flink_sql_interval(
-        window_descriptor.window_size
+    window_sizes = set(
+        [agg_descriptor.window_size for agg_descriptor in agg_descriptors]
     )
 
-    if window_descriptor.filter_expr is not None:
-        flink_table = flink_table.filter(
-            native_flink_expr.call_sql(window_descriptor.filter_expr)
+    if len(window_sizes) == 1:
+        result = _evaluate_same_size_sliding_window_transform(
+            t_env, flink_table, window_descriptor, window_sizes.pop(), agg_descriptors
         )
-    t_env.create_temporary_view("src_table", flink_table)
-    table = t_env.sql_query(
-        f"""
-        SELECT * FROM TABLE(
-            HOP(
-               DATA => TABLE src_table,
-               TIMECOL => DESCRIPTOR({EVENT_TIME_ATTRIBUTE_NAME}),
-               SLIDE => {step_interval},
-               SIZE => {window_size_interval}))
-        """
-    )
-    t_env.drop_temporary_view("src_table")
-
-    if window_descriptor.limit is not None:
-        table = _window_top_n_by_time(
-            t_env,
-            table,
-            window_descriptor.group_by_keys,
-            window_descriptor.limit,
-            ascending=False,
-        )
-
-    first_value_agg_descriptors = []
-    last_value_agg_descriptors = []
-    for agg_descriptor in agg_descriptors:
-        if agg_descriptor.agg_func == AggFunc.FIRST_VALUE:
-            first_value_agg_descriptors.append(agg_descriptor)
-        elif agg_descriptor.agg_func == AggFunc.LAST_VALUE:
-            last_value_agg_descriptors.append(agg_descriptor)
-    filtered_agg_descriptors = filter(
-        lambda x: x not in first_value_agg_descriptors
-        and x not in last_value_agg_descriptors,
-        agg_descriptors,
-    )
-
-    first_last_value_table = _get_first_last_value_table(
-        t_env,
-        table,
-        window_descriptor.group_by_keys,
-        first_value_agg_descriptors,
-        last_value_agg_descriptors,
-    )
-
-    group_by_key_cols = [
-        native_flink_expr.col(key) for key in window_descriptor.group_by_keys
-    ]
-
-    result = table.group_by(
-        native_flink_expr.col("window_start"),
-        native_flink_expr.col("window_end"),
-        native_flink_expr.col("window_time"),
-        *group_by_key_cols,
-    ).select(
-        *group_by_key_cols,
-        *[
-            _get_sliding_window_agg_select_expr(agg_descriptor)
-            for agg_descriptor in filtered_agg_descriptors
-        ],
-        native_flink_expr.col("window_time").alias(EVENT_TIME_ATTRIBUTE_NAME),
-    )
-
-    if first_last_value_table is not None:
-        result = join_table_on_key(
-            result,
-            first_last_value_table,
-            [
-                *window_descriptor.group_by_keys,
-                EVENT_TIME_ATTRIBUTE_NAME,
-            ],
+    else:
+        result = _evaluate_multi_size_sliding_window_transform(
+            t_env, flink_table, window_descriptor, agg_descriptors
         )
 
     if config.get(ENABLE_EMPTY_WINDOW_OUTPUT_CONFIG):
@@ -232,12 +161,193 @@ def evaluate_sliding_window_transform(
     return result
 
 
+def _evaluate_multi_size_sliding_window_transform(
+    t_env: StreamTableEnvironment,
+    table: NativeFlinkTable,
+    window_descriptor: SlidingWindowDescriptor,
+    agg_descriptors: List[SlidingWindowAggregationFieldDescriptor],
+) -> NativeFlinkTable:
+
+    pre_agg_descriptors = []
+    avg_fields = []
+    for agg_descriptor in agg_descriptors:
+        if agg_descriptor.agg_func == AggFunc.AVG:
+            avg_fields.append(agg_descriptor.field_name)
+            pre_agg_descriptors.append(
+                SlidingWindowAggregationFieldDescriptor(
+                    agg_descriptor.field_name + "_SUM__",
+                    agg_descriptor.field_data_type,
+                    agg_descriptor.expr,
+                    AggFunc.SUM,
+                    agg_descriptor.window_size,
+                )
+            )
+            pre_agg_descriptors.append(
+                SlidingWindowAggregationFieldDescriptor(
+                    agg_descriptor.field_name + "_COUNT__",
+                    DataTypes.BIGINT(),
+                    agg_descriptor.expr,
+                    AggFunc.COUNT,
+                    agg_descriptor.window_size,
+                )
+            )
+        else:
+            pre_agg_descriptors.append(agg_descriptor)
+
+    table = _evaluate_same_size_sliding_window_transform(
+        t_env,
+        table,
+        window_descriptor,
+        window_descriptor.step_size,
+        pre_agg_descriptors,
+    )
+
+    for avg_field in avg_fields:
+        table = table.add_columns(
+            native_flink_expr.row(
+                native_flink_expr.col(avg_field + "_SUM__"),
+                native_flink_expr.col(avg_field + "_COUNT__"),
+            ).alias(avg_field)
+        )
+        table = table.drop_columns(avg_field + "_SUM__")
+        table = table.drop_columns(avg_field + "_COUNT__")
+
+    table_schema = table.get_schema()
+
+    gateway = get_gateway()
+    descriptor_builder = (
+        gateway.jvm.com.alibaba.feathub.flink.udf.AggFieldsDescriptor.builder()
+    )
+
+    for agg_descriptor in agg_descriptors:
+        descriptor_builder.addField(
+            agg_descriptor.field_name,
+            _to_java_data_type(
+                table_schema.get_field_data_type(agg_descriptor.field_name)
+            ),
+            agg_descriptor.field_name,
+            _to_java_data_type(agg_descriptor.field_data_type),
+            int(agg_descriptor.window_size.total_seconds() * 1000),
+            agg_descriptor.agg_func.value,
+        )
+
+    key_array = gateway.new_array(
+        gateway.jvm.String, len(window_descriptor.group_by_keys)
+    )
+    for idx, key in enumerate(window_descriptor.group_by_keys):
+        key_array[idx] = key
+    j_table = gateway.jvm.com.alibaba.feathub.flink.udf.MultiSizeSlidingWindowUtils.applyMultiSizeSlidingWindowKeyedProcessFunction(  # noqa
+        table._t_env._j_tenv,
+        table._j_table,
+        key_array,
+        EVENT_TIME_ATTRIBUTE_NAME,
+        int(window_descriptor.step_size.total_seconds() * 1000),
+        descriptor_builder.build(),
+    )
+    table = NativeFlinkTable(j_table, table._t_env)
+
+    return table
+
+
+def _evaluate_same_size_sliding_window_transform(
+    t_env: StreamTableEnvironment,
+    flink_table: NativeFlinkTable,
+    window_descriptor: SlidingWindowDescriptor,
+    window_size: timedelta,
+    agg_descriptors: List[SlidingWindowAggregationFieldDescriptor],
+) -> NativeFlinkTable:
+    step_interval = timedelta_to_flink_sql_interval(window_descriptor.step_size)
+    window_size_interval = timedelta_to_flink_sql_interval(window_size)
+    if window_descriptor.filter_expr is not None:
+        flink_table = flink_table.filter(
+            native_flink_expr.call_sql(window_descriptor.filter_expr)
+        )
+    t_env.create_temporary_view("src_table", flink_table)
+
+    if window_descriptor.step_size == window_size:
+        table = t_env.sql_query(
+            f"""
+            SELECT * FROM TABLE(
+                TUMBLE(
+                   DATA => TABLE src_table,
+                   TIMECOL => DESCRIPTOR({EVENT_TIME_ATTRIBUTE_NAME}),
+                   SIZE => {window_size_interval}))
+            """
+        )
+    else:
+        table = t_env.sql_query(
+            f"""
+            SELECT * FROM TABLE(
+                HOP(
+                   DATA => TABLE src_table,
+                   TIMECOL => DESCRIPTOR({EVENT_TIME_ATTRIBUTE_NAME}),
+                   SLIDE => {step_interval},
+                   SIZE => {window_size_interval}))
+            """
+        )
+
+    t_env.drop_temporary_view("src_table")
+    if window_descriptor.limit is not None:
+        table = _window_top_n_by_time(
+            t_env,
+            table,
+            window_descriptor.group_by_keys,
+            window_descriptor.limit,
+            ascending=False,
+        )
+    first_value_agg_descriptors = []
+    last_value_agg_descriptors = []
+    for agg_descriptor in agg_descriptors:
+        if agg_descriptor.agg_func == AggFunc.FIRST_VALUE:
+            first_value_agg_descriptors.append(agg_descriptor)
+        elif agg_descriptor.agg_func == AggFunc.LAST_VALUE:
+            last_value_agg_descriptors.append(agg_descriptor)
+    filtered_agg_descriptors = filter(
+        lambda x: x not in first_value_agg_descriptors
+        and x not in last_value_agg_descriptors,
+        agg_descriptors,
+    )
+    first_last_value_table = _get_first_last_value_table(
+        t_env,
+        table,
+        window_descriptor.group_by_keys,
+        first_value_agg_descriptors,
+        last_value_agg_descriptors,
+    )
+    group_by_key_cols = [
+        native_flink_expr.col(key) for key in window_descriptor.group_by_keys
+    ]
+    result = table.group_by(
+        native_flink_expr.col("window_start"),
+        native_flink_expr.col("window_end"),
+        native_flink_expr.col("window_time"),
+        *group_by_key_cols,
+    ).select(
+        *group_by_key_cols,
+        *[
+            _get_sliding_window_agg_select_expr(agg_descriptor)
+            for agg_descriptor in filtered_agg_descriptors
+        ],
+        native_flink_expr.col("window_time").alias(EVENT_TIME_ATTRIBUTE_NAME),
+    )
+    if first_last_value_table is not None:
+        result = join_table_on_key(
+            result,
+            first_last_value_table,
+            [
+                *window_descriptor.group_by_keys,
+                EVENT_TIME_ATTRIBUTE_NAME,
+            ],
+        )
+    return result
+
+
 def _get_first_last_value_table(
     t_env: StreamTableEnvironment,
     table: NativeFlinkTable,
     group_by_keys: Sequence[str],
-    first_value_agg_descriptors: List["AggregationFieldDescriptor"],
-    last_value_agg_descriptors: List["AggregationFieldDescriptor"],
+    first_value_agg_descriptors: List[SlidingWindowAggregationFieldDescriptor],
+    last_value_agg_descriptors: List[SlidingWindowAggregationFieldDescriptor],
 ) -> Optional[NativeFlinkTable]:
     first_value_table = None
     last_value_table = None
@@ -342,7 +452,7 @@ def _window_top_n_by_time(
 def _apply_post_sliding_window_process_function(
     table: NativeFlinkTable,
     window_descriptor: SlidingWindowDescriptor,
-    agg_descriptors: List[AggregationFieldDescriptor],
+    agg_descriptors: List[SlidingWindowAggregationFieldDescriptor],
     skip_same_window_output: bool,
 ) -> NativeFlinkTable:
     gateway = get_gateway()

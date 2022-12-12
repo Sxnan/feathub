@@ -43,6 +43,7 @@ from feathub.processors.flink.flink_types_utils import to_flink_type
 from feathub.processors.flink.table_builder.aggregation_utils import (
     AggregationFieldDescriptor,
     get_default_value_and_type,
+    SlidingWindowAggregationFieldDescriptor,
 )
 from feathub.processors.flink.table_builder.flink_sql_expr_utils import (
     to_flink_sql_expr,
@@ -408,7 +409,7 @@ class FlinkTableBuilder:
 
         tmp_table = source_table
         sliding_window_agg_map: Dict[
-            SlidingWindowDescriptor, List[AggregationFieldDescriptor]
+            SlidingWindowDescriptor, List[SlidingWindowAggregationFieldDescriptor]
         ] = {}
 
         # This list contains all per-row transform features listed after the first
@@ -453,7 +454,9 @@ class FlinkTableBuilder:
                     SlidingWindowDescriptor.from_sliding_window_transform(transform),
                     [],
                 )
-                window_aggs.append(AggregationFieldDescriptor.from_feature(feature))
+                window_aggs.append(
+                    SlidingWindowAggregationFieldDescriptor.from_feature(feature)
+                )
             else:
                 raise FeathubTransformationException(
                     f"Unsupported transformation type "
