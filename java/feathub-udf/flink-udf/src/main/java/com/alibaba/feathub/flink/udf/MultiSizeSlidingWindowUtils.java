@@ -169,7 +169,8 @@ public class MultiSizeSlidingWindowUtils {
 
         // Records are ordered by row time after sliding window.
         builder.watermark(
-                rowTimeFieldName, String.format("`%s` - INTERVAL '0' SECONDS", rowTimeFieldName));
+                rowTimeFieldName,
+                String.format("`%s` - INTERVAL '0.001' SECONDS", rowTimeFieldName));
         return builder.build();
     }
 }

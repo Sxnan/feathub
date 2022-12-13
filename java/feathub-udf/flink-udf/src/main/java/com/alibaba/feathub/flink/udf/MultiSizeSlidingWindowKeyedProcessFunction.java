@@ -28,8 +28,10 @@ import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Collector;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.Map;
 
 /**
  * A KeyedProcessFunction that aggregate sliding windows with different sizes. With this process
@@ -79,7 +81,7 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             ctx.timerService().registerEventTimeTimer(triggerTime);
             triggerTime += stepSizeMs;
         }
-        state.addRow(rowTime, row);
+        state.addRow(ctx.getCurrentKey(), rowTime, row);
     }
 
     @Override
@@ -88,11 +90,11 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             KeyedProcessFunction<Row, Row, Row>.OnTimerContext ctx,
             Collector<Row> out)
             throws Exception {
-        state.pruneRow(timestamp - descriptor.getMaxWindowSizeMs());
+        state.pruneRow(ctx.getCurrentKey(), timestamp - descriptor.getMaxWindowSizeMs());
         descriptor.getAggFieldDescriptors().forEach(d -> d.aggFunc.reset());
 
         boolean hasRow = false;
-        for (long rowTime : state.orderedTimestamp) {
+        for (long rowTime : state.orderedTimestampMap.get(ctx.getCurrentKey())) {
             if (rowTime > timestamp) {
                 break;
             }
@@ -130,13 +132,12 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
     /** The state of {@link MultiSizeSlidingWindowKeyedProcessFunction}. */
     public static class MultiWindowSizeState {
         private final MapState<Long, Row> rowState;
-        private final LinkedList<Long> orderedTimestamp;
-        private boolean initialized = false;
+        private final Map<Row, LinkedList<Long>> orderedTimestampMap;
 
         private MultiWindowSizeState(MapState<Long, Row> mapState) {
 
             this.rowState = mapState;
-            this.orderedTimestamp = new LinkedList<>();
+            this.orderedTimestampMap = new HashMap<>();
         }
 
         public static MultiWindowSizeState buildMultiWindowSizeState(
@@ -149,18 +150,24 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             return new MultiWindowSizeState(mapState);
         }
 
-        public void addRow(long timestamp, Row row) throws Exception {
-            if (!initialized) {
+        public void addRow(Row key, long timestamp, Row row) throws Exception {
+            LinkedList<Long> orderedTimestamp = orderedTimestampMap.get(key);
+            if (orderedTimestamp == null) {
+                orderedTimestamp = new LinkedList<>();
                 CollectionUtil.iterableToList(rowState.keys()).stream()
                         .sorted()
                         .forEach(orderedTimestamp::add);
-                initialized = true;
             }
             rowState.put(timestamp, row);
             orderedTimestamp.addLast(timestamp);
+            orderedTimestampMap.put(key, orderedTimestamp);
         }
 
-        public void pruneRow(long lowerBound) throws Exception {
+        public void pruneRow(Row key, long lowerBound) throws Exception {
+            LinkedList<Long> orderedTimestamp = orderedTimestampMap.get(key);
+            if (orderedTimestamp == null) {
+                return;
+            }
             final Iterator<Long> iterator = orderedTimestamp.iterator();
             while (iterator.hasNext()) {
                 final long cur = iterator.next();
