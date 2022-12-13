@@ -19,6 +19,8 @@ package com.alibaba.feathub.flink.udf;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.LongSerializer;
 import org.apache.flink.configuration.Configuration;
@@ -31,9 +33,12 @@ import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.Map;
 
 /**
  * A KeyedProcessFunction that aggregate sliding windows with different sizes. With this process
@@ -54,8 +59,8 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
     private final TypeSerializer<Row> rowTypeSerializer;
     private final String rowTimeFieldName;
     private final long stepSizeMs;
-
     private MultiWindowSizeState state;
+    private ValueState<Long> maxTriggerTimeState;
 
     public MultiSizeSlidingWindowKeyedProcessFunction(
             AggFieldsDescriptor descriptor,
@@ -69,10 +74,13 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
     }
 
     @Override
-    public void open(Configuration parameters) {
+    public void open(Configuration parameters) throws IOException {
         state =
                 MultiWindowSizeState.buildMultiWindowSizeState(
                         getRuntimeContext(), rowTypeSerializer);
+        maxTriggerTimeState =
+                getRuntimeContext()
+                        .getState(new ValueStateDescriptor<Long>("maxTriggerTimer", Long.class));
     }
 
     @Override
@@ -80,15 +88,24 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             Row row, KeyedProcessFunction<Row, Row, Row>.Context ctx, Collector<Row> out)
             throws Exception {
         final long rowTime = ((Instant) row.getFieldAs(rowTimeFieldName)).toEpochMilli();
-        long triggerTime = rowTime;
-        while (triggerTime <= rowTime + descriptor.getMaxWindowSizeMs()) {
-            LOG.debug("[Key={}] Register timer {}", ctx.getCurrentKey(), triggerTime);
-            ctx.timerService().registerEventTimeTimer(triggerTime);
-            triggerTime += stepSizeMs;
+
+        Long maxTriggerTime = this.maxTriggerTimeState.value();
+        if (maxTriggerTime == null) {
+            maxTriggerTimeState.update(rowTime - stepSizeMs);
+            maxTriggerTime = rowTime - stepSizeMs;
+        }
+        if (rowTime + descriptor.getMaxWindowSizeMs() > maxTriggerTime) {
+            long triggerTime = rowTime + descriptor.getMaxWindowSizeMs();
+            while (triggerTime > maxTriggerTime) {
+                LOG.debug("[Key={}] Register timer {}", ctx.getCurrentKey(), triggerTime);
+                ctx.timerService().registerEventTimeTimer(triggerTime);
+                triggerTime -= stepSizeMs;
+            }
+            maxTriggerTimeState.update(rowTime + descriptor.getMaxWindowSizeMs());
         }
         LOG.debug(
                 "[Key={}] Add row to state {} with row time {}", ctx.getCurrentKey(), row, rowTime);
-        state.addRow(rowTime, row);
+        state.addRow(ctx.getCurrentKey(), rowTime, row);
     }
 
     @Override
@@ -99,11 +116,11 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             throws Exception {
         LOG.debug("[Key={}] onTimer timestamp: {}", ctx.getCurrentKey(), timestamp);
         LOG.debug("Current state: {}", CollectionUtil.iterableToList(state.rowState.entries()));
-        state.pruneRow(timestamp - descriptor.getMaxWindowSizeMs());
+        state.pruneRow(ctx.getCurrentKey(), timestamp - descriptor.getMaxWindowSizeMs());
         descriptor.getAggFieldDescriptors().forEach(d -> d.aggFunc.reset());
 
         boolean hasRow = false;
-        for (long rowTime : state.orderedTimestamp) {
+        for (long rowTime : state.orderedTimestampMap.get(ctx.getCurrentKey())) {
             if (rowTime > timestamp) {
                 break;
             }
@@ -142,13 +159,12 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
     /** The state of {@link MultiSizeSlidingWindowKeyedProcessFunction}. */
     public static class MultiWindowSizeState {
         private final MapState<Long, Row> rowState;
-        private final LinkedList<Long> orderedTimestamp;
-        private boolean initialized = false;
+        private final Map<Row, LinkedList<Long>> orderedTimestampMap;
 
         private MultiWindowSizeState(MapState<Long, Row> mapState) {
 
             this.rowState = mapState;
-            this.orderedTimestamp = new LinkedList<>();
+            this.orderedTimestampMap = new HashMap<>();
         }
 
         public static MultiWindowSizeState buildMultiWindowSizeState(
@@ -161,20 +177,26 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             return new MultiWindowSizeState(mapState);
         }
 
-        public void addRow(long timestamp, Row row) throws Exception {
-            if (!initialized) {
+        public void addRow(Row key, long timestamp, Row row) throws Exception {
+            LinkedList<Long> orderedTimestamp = orderedTimestampMap.get(key);
+            if (orderedTimestamp == null) {
+                orderedTimestamp = new LinkedList<>();
                 CollectionUtil.iterableToList(rowState.keys()).stream()
                         .sorted()
                         .forEach(orderedTimestamp::add);
-                initialized = true;
             }
             rowState.put(timestamp, row);
             orderedTimestamp.addLast(timestamp);
+            orderedTimestampMap.put(key, orderedTimestamp);
             LOG.debug("Current state: {}", CollectionUtil.iterableToList(rowState.entries()));
         }
 
-        public void pruneRow(long lowerBound) throws Exception {
+        public void pruneRow(Row key, long lowerBound) throws Exception {
             LOG.debug("Prune rows with lower bound: {}", lowerBound);
+            LinkedList<Long> orderedTimestamp = orderedTimestampMap.get(key);
+            if (orderedTimestamp == null) {
+                return;
+            }
             final Iterator<Long> iterator = orderedTimestamp.iterator();
             while (iterator.hasNext()) {
                 final long cur = iterator.next();
