@@ -255,7 +255,11 @@ public class MultiSizeSlidingWindowKeyedProcessFunctionTest {
                                 },
                                 Instant.ofEpochMilli(7999)));
 
-        List<Row> actual = CollectionUtil.iteratorToList(table.execute().collect());
-        assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+        try {
+            List<Row> actual = CollectionUtil.iteratorToList(table.execute().collect());
+            assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }

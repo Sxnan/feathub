@@ -26,6 +26,10 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.Preconditions;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.Iterator;
@@ -44,6 +48,8 @@ import java.util.LinkedList;
 public class MultiSizeSlidingWindowKeyedProcessFunction
         extends KeyedProcessFunction<Row, Row, Row> {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(MultiSizeSlidingWindowKeyedProcessFunction.class);
     private final AggFieldsDescriptor descriptor;
     private final TypeSerializer<Row> rowTypeSerializer;
     private final String rowTimeFieldName;
@@ -76,9 +82,12 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
         final long rowTime = ((Instant) row.getFieldAs(rowTimeFieldName)).toEpochMilli();
         long triggerTime = rowTime;
         while (triggerTime <= rowTime + descriptor.getMaxWindowSizeMs()) {
+            LOG.debug("[Key={}] Register timer {}", ctx.getCurrentKey(), triggerTime);
             ctx.timerService().registerEventTimeTimer(triggerTime);
             triggerTime += stepSizeMs;
         }
+        LOG.debug(
+                "[Key={}] Add row to state {} with row time {}", ctx.getCurrentKey(), row, rowTime);
         state.addRow(rowTime, row);
     }
 
@@ -88,6 +97,8 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             KeyedProcessFunction<Row, Row, Row>.OnTimerContext ctx,
             Collector<Row> out)
             throws Exception {
+        LOG.debug("[Key={}] onTimer timestamp: {}", ctx.getCurrentKey(), timestamp);
+        LOG.debug("Current state: {}", CollectionUtil.iterableToList(state.rowState.entries()));
         state.pruneRow(timestamp - descriptor.getMaxWindowSizeMs());
         descriptor.getAggFieldDescriptors().forEach(d -> d.aggFunc.reset());
 
@@ -97,7 +108,8 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
                 break;
             }
             Row curRow = state.rowState.get(rowTime);
-
+            Preconditions.checkNotNull(
+                    curRow, String.format("Fail to find row with timestamp %s in state.", rowTime));
             for (AggFieldsDescriptor.AggFieldDescriptor descriptor :
                     descriptor.getAggFieldDescriptors()) {
                 long lowerBound = timestamp - descriptor.windowSize;
@@ -158,18 +170,23 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             }
             rowState.put(timestamp, row);
             orderedTimestamp.addLast(timestamp);
+            LOG.debug("Current state: {}", CollectionUtil.iterableToList(rowState.entries()));
         }
 
         public void pruneRow(long lowerBound) throws Exception {
+            LOG.debug("Prune rows with lower bound: {}", lowerBound);
             final Iterator<Long> iterator = orderedTimestamp.iterator();
             while (iterator.hasNext()) {
                 final long cur = iterator.next();
                 if (cur >= lowerBound) {
                     break;
                 }
+
+                LOG.debug("Removed row with timestamp {}", cur);
                 rowState.remove(cur);
                 iterator.remove();
             }
+            LOG.debug("Current state: {}", CollectionUtil.iterableToList(rowState.entries()));
         }
     }
 }
