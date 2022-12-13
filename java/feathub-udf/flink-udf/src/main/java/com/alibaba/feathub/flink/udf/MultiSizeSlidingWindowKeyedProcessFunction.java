@@ -62,6 +62,8 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
     private MultiWindowSizeState state;
     private ValueState<Long> maxTriggerTimeState;
 
+    private ValueState<Long> lastRowTimeState;
+
     public MultiSizeSlidingWindowKeyedProcessFunction(
             AggFieldsDescriptor descriptor,
             TypeSerializer<Row> rowTypeSerializer,
@@ -81,6 +83,9 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
         maxTriggerTimeState =
                 getRuntimeContext()
                         .getState(new ValueStateDescriptor<Long>("maxTriggerTimer", Long.class));
+        lastRowTimeState =
+                getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>("lastRowTimeState", Long.class));
     }
 
     @Override
@@ -88,6 +93,15 @@ public class MultiSizeSlidingWindowKeyedProcessFunction
             Row row, KeyedProcessFunction<Row, Row, Row>.Context ctx, Collector<Row> out)
             throws Exception {
         final long rowTime = ((Instant) row.getFieldAs(rowTimeFieldName)).toEpochMilli();
+        final Long lastRowTime = lastRowTimeState.value();
+        if (lastRowTime != null) {
+            Preconditions.checkState(
+                    lastRowTime < rowTime,
+                    String.format(
+                            "key: %s row out of ordered. lastRowTime: %s current row time: %s",
+                            ctx.getCurrentKey(), lastRowTime, rowTime));
+        }
+        lastRowTimeState.update(rowTime);
 
         Long maxTriggerTime = this.maxTriggerTimeState.value();
         if (maxTriggerTime == null) {

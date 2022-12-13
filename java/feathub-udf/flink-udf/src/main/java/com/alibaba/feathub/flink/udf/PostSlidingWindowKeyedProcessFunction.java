@@ -127,9 +127,13 @@ public class PostSlidingWindowKeyedProcessFunction extends KeyedProcessFunction<
             Row row, KeyedProcessFunction<Row, Row, Row>.Context ctx, Collector<Row> out)
             throws Exception {
         final Instant rowInstant = row.getFieldAs(rowTimeFieldName);
-        final Long lastRowTime = this.lastRowTimeState.value();
+        final Long lastRowTime = lastRowTimeState.value();
         if (lastRowTime != null) {
-            Preconditions.checkState(lastRowTime < rowInstant.toEpochMilli());
+            Preconditions.checkState(
+                    lastRowTime < rowInstant.toEpochMilli(),
+                    String.format(
+                            "key: %s row out of ordered. lastRowTime: %s current row time: %s",
+                            ctx.getCurrentKey(), lastRowTime, rowInstant.toEpochMilli()));
         }
         lastRowTimeState.update(rowInstant.toEpochMilli());
         rowState.put(rowInstant.toEpochMilli(), row);
