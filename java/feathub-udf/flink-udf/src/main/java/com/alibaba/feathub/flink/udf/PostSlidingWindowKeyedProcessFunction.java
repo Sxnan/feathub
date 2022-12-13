@@ -18,6 +18,8 @@ package com.alibaba.feathub.flink.udf;
 
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.LongSerializer;
@@ -32,6 +34,10 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.runtime.typeutils.ExternalTypeInfo;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.Preconditions;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 
@@ -48,6 +54,8 @@ import java.time.Instant;
 public class PostSlidingWindowKeyedProcessFunction extends KeyedProcessFunction<Row, Row, Row>
         implements ResultTypeQueryable<Row> {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(PostSlidingWindowKeyedProcessFunction.class);
     private final long windowStepSizeMs;
     private final TypeSerializer<Row> keySerializer;
     private final TypeSerializer<Row> rowTypeSerializer;
@@ -57,7 +65,11 @@ public class PostSlidingWindowKeyedProcessFunction extends KeyedProcessFunction<
     private final PostSlidingWindowExpiredRowHandler expiredRowHandler;
     private final boolean skipSameWindowOutput;
 
-    private MapState<Row, Tuple2<Long, Row>> lastRowState;
+    private ValueState<Tuple2<Long, Row>> lastRowState;
+
+    private MapState<Long, Row> rowState;
+
+    private ValueState<Long> lastRowTimeState;
 
     public PostSlidingWindowKeyedProcessFunction(
             ResolvedSchema schema,
@@ -100,50 +112,28 @@ public class PostSlidingWindowKeyedProcessFunction extends KeyedProcessFunction<
                         new TypeSerializer[] {LongSerializer.INSTANCE, rowTypeSerializer});
         lastRowState =
                 getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>("lastRowState", tupleSerializer));
+        rowState =
+                getRuntimeContext()
                         .getMapState(
                                 new MapStateDescriptor<>(
-                                        "lastRowState", keySerializer, tupleSerializer));
+                                        "rowState", LongSerializer.INSTANCE, rowTypeSerializer));
+        lastRowTimeState =
+                getRuntimeContext().getState(new ValueStateDescriptor<>("lastRowTime", Long.class));
     }
 
     @Override
     public void processElement(
             Row row, KeyedProcessFunction<Row, Row, Row>.Context ctx, Collector<Row> out)
             throws Exception {
-        final Row currentKey = ctx.getCurrentKey();
-        final Tuple2<Long, Row> lastRowTuple = lastRowState.get(currentKey);
         final Instant rowInstant = row.getFieldAs(rowTimeFieldName);
-
-        long currentRowTs = rowInstant.toEpochMilli();
-        long currentRowExpirationTs = currentRowTs + windowStepSizeMs;
-        ctx.timerService().registerEventTimeTimer(currentRowExpirationTs);
-
-        if (lastRowTuple == null) {
-            lastRowState.put(currentKey, new Tuple2<>(currentRowExpirationTs, row));
-            out.collect(row);
-            return;
+        final Long lastRowTime = this.lastRowTimeState.value();
+        if (lastRowTime != null) {
+            Preconditions.checkState(lastRowTime < rowInstant.toEpochMilli());
         }
-
-        final long lastRowExpirationTs = lastRowTuple.f0;
-        final Row lastRow = lastRowTuple.f1;
-        ctx.timerService().deleteEventTimeTimer(lastRowExpirationTs);
-
-        if (lastRowExpirationTs < currentRowTs) {
-            // The last row is expired.
-            expiredRowHandler.handleExpiredRow(out, lastRow, lastRowExpirationTs);
-        }
-
-        // Do not output the current row if skipSameWindowOutput is true, last row is not expire
-        // and the values do not change.
-        if (skipSameWindowOutput
-                && lastRowExpirationTs >= currentRowTs
-                && isRowValueEquals(lastRow, row)) {
-            // Only update the expiration timestamp
-            lastRowState.put(currentKey, new Tuple2<>(currentRowExpirationTs, lastRow));
-            return;
-        }
-
-        lastRowState.put(currentKey, new Tuple2<>(currentRowExpirationTs, row));
-        out.collect(row);
+        lastRowTimeState.update(rowInstant.toEpochMilli());
+        rowState.put(rowInstant.toEpochMilli(), row);
+        ctx.timerService().registerEventTimeTimer(rowInstant.toEpochMilli());
     }
 
     @Override
@@ -152,11 +142,59 @@ public class PostSlidingWindowKeyedProcessFunction extends KeyedProcessFunction<
             KeyedProcessFunction<Row, Row, Row>.OnTimerContext ctx,
             Collector<Row> out)
             throws Exception {
-        final Row currentKey = ctx.getCurrentKey();
-        final Tuple2<Long, Row> lastRowTuple = lastRowState.get(currentKey);
+        Row row = rowState.get(timestamp);
+        if (row != null) {
+            LOG.info("Process element key: {} row: {}", ctx.getCurrentKey(), row);
+            final Row currentKey = ctx.getCurrentKey();
+            final Tuple2<Long, Row> lastRowTuple = lastRowState.value();
+            final Instant rowInstant = row.getFieldAs(rowTimeFieldName);
 
-        expiredRowHandler.handleExpiredRow(out, lastRowTuple.f1, timestamp);
-        lastRowState.remove(currentKey);
+            long currentRowTs = rowInstant.toEpochMilli();
+            long currentRowExpirationTs = currentRowTs + windowStepSizeMs;
+            ctx.timerService().registerEventTimeTimer(currentRowExpirationTs);
+
+            if (lastRowTuple == null) {
+                lastRowState.update(new Tuple2<>(currentRowExpirationTs, row));
+                LOG.info("Output row: {}", row);
+                out.collect(row);
+                return;
+            }
+
+            final long lastRowExpirationTs = lastRowTuple.f0;
+            final Row lastRow = lastRowTuple.f1;
+            ctx.timerService().deleteEventTimeTimer(lastRowExpirationTs);
+
+            if (lastRowExpirationTs < currentRowTs) {
+                // The last row is expired.
+                expiredRowHandler.handleExpiredRow(out, lastRow, lastRowExpirationTs);
+            }
+
+            // Do not output the current row if skipSameWindowOutput is true, last row is not expire
+            // and the values do not change.
+            if (skipSameWindowOutput
+                    && lastRowExpirationTs >= currentRowTs
+                    && isRowValueEquals(lastRow, row)) {
+                // Only update the expiration timestamp
+                lastRowState.update(new Tuple2<>(currentRowExpirationTs, lastRow));
+                return;
+            }
+
+            lastRowState.update(new Tuple2<>(currentRowExpirationTs, row));
+            LOG.info("Output row: {}", row);
+            out.collect(row);
+        } else {
+            final Row currentKey = ctx.getCurrentKey();
+            final Tuple2<Long, Row> lastRowTuple = lastRowState.value();
+
+            LOG.info(
+                    "On timer key: {} timestamp: {} expired row: {}",
+                    ctx.getCurrentKey(),
+                    timestamp,
+                    lastRowTuple.f1);
+
+            expiredRowHandler.handleExpiredRow(out, lastRowTuple.f1, timestamp);
+            lastRowState.clear();
+        }
     }
 
     @Override

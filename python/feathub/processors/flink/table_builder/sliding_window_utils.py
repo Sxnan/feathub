@@ -246,6 +246,8 @@ def _evaluate_multi_size_sliding_window_transform(
     )
     table = NativeFlinkTable(j_table, table._t_env)
 
+    table.execute().print()
+
     return table
 
 
