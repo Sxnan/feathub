@@ -88,3 +88,7 @@ class LocalProcessorITTest(
     # TODO: Enable this test after local processor support datagen source.
     def test_bounded_left_table_join_unbounded_right_table(self):
         pass
+
+    # TODO: LocalProcessor filesystem source/sink supports avro format.
+    def test_local_file_system_avro_source_sink(self):
+        pass

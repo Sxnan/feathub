@@ -42,6 +42,10 @@ class FileSystemSourceSinkITTest(ABC, FeathubITTestBase):
         sink_path = tempfile.NamedTemporaryFile(dir=self.temp_dir, suffix=".json").name
         self._test_file_system_source_sink(sink_path, "json")
 
+    def test_local_file_system_avro_source_sink(self):
+        sink_path = tempfile.NamedTemporaryFile(dir=self.temp_dir, suffix=".avro").name
+        self._test_file_system_source_sink(sink_path, "avro")
+
     def _test_file_system_source_sink(self, path: str, data_format: str):
         source = self.create_file_source(self.input_data)
 

@@ -33,6 +33,7 @@ from feathub.feature_tables.sources.kafka_source import KafkaSource
 from feathub.processors.constants import EVENT_TIME_ATTRIBUTE_NAME
 from feathub.processors.flink.flink_jar_utils import find_jar_lib, add_jar_to_t_env
 from feathub.processors.flink.flink_types_utils import to_flink_schema
+from feathub.processors.flink.table_builder.format_utils import load_format
 from feathub.processors.flink.table_builder.source_sink_utils_common import (
     define_watermark,
     get_schema_from_table,
@@ -114,7 +115,9 @@ def get_table_from_kafka_source(
     if kafka_source.is_bounded():
         descriptor_builder.option("scan.bounded.mode", "latest-offset")
 
+    load_format(t_env, kafka_source.value_format)
     if kafka_source.key_format is not None and len(keys) > 0:
+        load_format(t_env, kafka_source.key_format)
         descriptor_builder.option("key.format", kafka_source.key_format)
         descriptor_builder.option("key.fields", ";".join(keys))
         descriptor_builder.option("value.fields-include", "EXCEPT_KEY")
@@ -187,7 +190,9 @@ def insert_into_kafka_sink(
         .option("topic", topic)
     )
 
+    load_format(t_env, sink.value_format)
     if sink.key_format is not None and len(keys) > 0:
+        load_format(t_env, sink.key_format)
         kafka_sink_descriptor_builder.option("value.fields-include", "EXCEPT_KEY")
         kafka_sink_descriptor_builder.option("key.format", sink.key_format)
         kafka_sink_descriptor_builder.option("key.fields", ";".join(keys))
