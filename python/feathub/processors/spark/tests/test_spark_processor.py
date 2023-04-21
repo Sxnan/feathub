@@ -146,3 +146,7 @@ class SparkProcessorITTest(
 
     def test_over_window_transform_count_with_limit(self):
         pass
+
+    # TODO: SparkProcessor filesystem source/sink supports avro format.
+    def test_local_file_system_avro_source_sink(self):
+        pass
