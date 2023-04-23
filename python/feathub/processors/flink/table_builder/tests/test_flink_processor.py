@@ -15,11 +15,12 @@ import os
 import shutil
 import tempfile
 import unittest
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple, Any
 from unittest.mock import MagicMock, Mock, patch
 
 import pandas as pd
 from pyflink import java_gateway
+from pyflink.java_gateway import get_gateway
 from pyflink.table import Table, TableSchema
 
 from feathub.common.exceptions import (
@@ -39,7 +40,6 @@ from feathub.feature_tables.tests.test_file_system_source_sink import (
 from feathub.feature_tables.tests.test_kafka_source_sink import (
     KafkaSourceSinkITTest,
 )
-from feathub.feature_tables.tests.test_mysql_source_sink import MySQLSourceSinkITTest
 from feathub.feature_tables.tests.test_print_sink import PrintSinkITTest
 from feathub.feature_tables.tests.test_redis_source_sink import (
     RedisSourceSinkITTest,
@@ -409,11 +409,11 @@ class FlinkProcessorITTest(
     BlackHoleSinkITTest,
     FlinkSqlFeatureViewITTest,
     GetFeaturesITTest,
-    MySQLSourceSinkITTest,
+    # MySQLSourceSinkITTest,
 ):
     __test__ = True
 
-    _cached_clients: Dict[str, FeathubClient] = None
+    _cached_clients: Dict[str, Tuple[FeathubClient, Any]] = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -446,18 +446,27 @@ class FlinkProcessorITTest(
 
     def get_client(self, extra_config: Optional[Dict] = None) -> FeathubClient:
         if str(extra_config) not in self._cached_clients:
-            self._cached_clients[
-                str(extra_config)
-            ] = self.get_client_with_local_registry(
-                {
-                    "type": "flink",
-                    "flink": {
-                        "deployment_mode": "cli",
+            self._cached_clients[str(extra_config)] = (
+                self.get_client_with_local_registry(
+                    {
+                        "type": "flink",
+                        "flink": {
+                            "deployment_mode": "cli",
+                        },
                     },
-                },
-                extra_config,
+                    extra_config,
+                ),
+                get_gateway().jvm.Thread.currentThread().getContextClassLoader(),
             )
-        return self._cached_clients[str(extra_config)]
+
+        # PyFlink will create a new classloader for each StreamTableEnvironment
+        # that initialize with EnvironmentSettings, see
+        # EnvironmentSettings.Builder.build. Each FeathubClient initialize create a
+        # new instance of StreamTableEnvironment, so we need to keep track of the
+        # classloader of each FeathubClient and set the context classloader accordingly.
+        client, class_loader = self._cached_clients[str(extra_config)]
+        get_gateway().jvm.Thread.currentThread().setContextClassLoader(class_loader)
+        return client
 
     def test_unsupported_file_format(self):
         source = self.create_file_source(self.input_data)

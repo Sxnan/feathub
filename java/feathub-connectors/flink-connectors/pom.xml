@@ -27,7 +27,6 @@
     <artifactId>flink-connectors</artifactId>
     <packaging>pom</packaging>
     <modules>
-        <module>flink-connector-kafka</module>
         <module>flink-connector-redis</module>
     </modules>
 

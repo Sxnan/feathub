@@ -136,7 +136,8 @@ class KafkaSourceSinkTest(unittest.TestCase):
                 self.assertIn(col_str, schema_str)
 
             expected_options = {
-                "connector": "bounded-kafka",
+                "connector": "kafka",
+                "scan.bounded.mode": "latest-offset",
                 "topic": "test-topic",
                 "properties.bootstrap.servers": "localhost:9092",
                 "properties.group.id": "test-group",

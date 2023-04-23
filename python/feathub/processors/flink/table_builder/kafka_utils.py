@@ -47,9 +47,7 @@ def get_table_from_kafka_source(
     kafka_source: KafkaSource,
     keys: Sequence[str],
 ) -> NativeFlinkTable:
-    add_jar_to_t_env(
-        t_env, _get_kafka_connector_jar(), _get_bounded_kafka_connector_jar()
-    )
+    add_jar_to_t_env(t_env, _get_kafka_connector_jar())
     schema = kafka_source.schema
     if schema is None:
         raise FeathubException("Flink processor requires schema for the KafkaSource.")
@@ -98,9 +96,9 @@ def get_table_from_kafka_source(
             )
             flink_schema = builder.build()
 
-    connector_type = "bounded-kafka" if kafka_source.is_bounded() else "kafka"
+    # connector_type = "bounded-kafka" if kafka_source.is_bounded() else "kafka"
     descriptor_builder = (
-        NativeFlinkTableDescriptor.for_connector(connector_type)
+        NativeFlinkTableDescriptor.for_connector("kafka")
         .option("value.format", kafka_source.value_format)
         .option("properties.bootstrap.servers", kafka_source.bootstrap_server)
         .option("topic", kafka_source.topic)
@@ -112,6 +110,10 @@ def get_table_from_kafka_source(
         )
         .schema(flink_schema)
     )
+
+    if kafka_source.is_bounded():
+        descriptor_builder.option("scan.bounded.mode", "latest-offset")
+
     if kafka_source.key_format is not None and len(keys) > 0:
         descriptor_builder.option("key.format", kafka_source.key_format)
         descriptor_builder.option("key.fields", ";".join(keys))
@@ -174,9 +176,7 @@ def insert_into_kafka_sink(
     sink: KafkaSink,
     keys: Sequence[str],
 ) -> TableResult:
-    add_jar_to_t_env(
-        t_env, _get_kafka_connector_jar(), _get_bounded_kafka_connector_jar()
-    )
+    add_jar_to_t_env(t_env, _get_kafka_connector_jar())
     bootstrap_server = sink.bootstrap_server
     topic = sink.topic
     kafka_sink_descriptor_builder = (
@@ -201,16 +201,6 @@ def insert_into_kafka_sink(
 def _get_kafka_connector_jar() -> str:
     lib_dir = find_jar_lib()
     jars = glob.glob(os.path.join(lib_dir, "flink-sql-connector-kafka-*.jar"))
-    if len(jars) < 1:
-        raise FeathubException(
-            f"Can not find the Flink Kafka connector jar at {lib_dir}."
-        )
-    return jars[0]
-
-
-def _get_bounded_kafka_connector_jar() -> str:
-    lib_dir = find_jar_lib()
-    jars = glob.glob(os.path.join(lib_dir, "flink-connector-kafka-*.jar"))
     if len(jars) < 1:
         raise FeathubException(
             f"Can not find the Flink Kafka connector jar at {lib_dir}."

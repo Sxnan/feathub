@@ -159,7 +159,7 @@ class FlinkTableBuilder:
             table = self._range_table_by_time(table, start_datetime, end_datetime)
 
         if EVENT_TIME_ATTRIBUTE_NAME in table.get_schema().get_field_names():
-            table = table.drop_columns(EVENT_TIME_ATTRIBUTE_NAME)
+            table = table.drop_columns(native_flink_expr.col(EVENT_TIME_ATTRIBUTE_NAME))
 
         self._built_tables.clear()
 
